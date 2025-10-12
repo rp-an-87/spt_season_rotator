@@ -1,0 +1,12 @@
+{
+  "SeasonsLengths": {
+    "WINTER": 11,
+    "SPRING": 6,
+    "SPRING_EARLY": 6,
+    "SUMMER": 12,
+    "AUTUMN": 6,
+    "AUTUMN_LATE": 7,
+    "STORM": 1
+  },
+  "UseCustomWeather": true
+}
