@@ -361,24 +361,24 @@
             "CLOUDY": 1
         },
         "AUTUMN": {
-            "SUNNY": 4,
-            "RAINY": 7,
-            "CLOUDY": 12
-        },
-        "AUTUMN_LATE": {
-            "SUNNY": 1,
-            "RAINY": 12,
-            "CLOUDY": 5
-        },
-        "SPRING": {
-            "SUNNY": 3,
-            "RAINY": 7,
-            "CLOUDY": 3
-        },
-        "SPRING_EARLY": {
-            "SUNNY": 10,
+            "SUNNY": 7,
             "RAINY": 5,
             "CLOUDY": 7
+        },
+        "AUTUMN_LATE": {
+            "SUNNY": 3,
+            "RAINY": 12,
+            "CLOUDY": 8
+        },
+        "SPRING_EARLY": {
+            "SUNNY": 4,
+            "RAINY": 7,
+            "CLOUDY": 7
+        },
+        "SPRING": {
+            "SUNNY": 12,
+            "RAINY": 5,
+            "CLOUDY": 8
         }
     }
 }

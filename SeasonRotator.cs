@@ -1,39 +1,39 @@
 ﻿using SPTarkov.Common.Extensions;
+using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
-using SPTarkov.Server.Core.Helpers;
+using SPTarkov.Server.Core.Helpers.Server;
 using SPTarkov.Server.Core.Models.Spt.Config;
 using SPTarkov.Server.Core.Models.Spt.Mod;
-using SPTarkov.Server.Core.Models.Utils;
-using SPTarkov.Server.Core.Servers;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using Season = SPTarkov.Server.Core.Models.Enums.Season;
 namespace SeasonRotator;
 
-public record ModMetadata : AbstractModMetadata{
-    public override string ModGuid { get; init; } = "com.turbodestroyer.season-rotator";
-    public override string Name { get; init; } = "SeasonRotator";
-    public override string Author { get; init; } = "turbodestroyer";
-    public override List<string>? Contributors { get; init; }
-    public override SemanticVersioning.Version Version { get; init; } = new("1.0.0");
-    public override SemanticVersioning.Range SptVersion { get; init; } = new("~4.0.0");
+public record ModMetadata : IModMetadata{
+    public string ModGuid { get; init; } = "com.turbodestroyer.seasonrotator";
+    public string Name { get; init; } = "SeasonRotator";
+    public string Author { get; init; } = "turbodestroyer";
+    public List<string>? Contributors { get; init; }
+    public SemanticVersioning.Version Version { get; init; } = new("1.0.0");
+    public SemanticVersioning.Range SptVersion { get; init; } = new("~4.1.0");
 
-    public override List<string>? Incompatibilities { get; init; }
-    public override Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
-    public override string? Url { get; init; }
-    public override bool? IsBundleMod { get; init; }
-    public override string? License { get; init; } = "MIT";
+    public bool HasPrepatcher { get; init; }
+    public List<string>? Incompatibilities { get; init; }
+    public Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
+    public string? Url { get; init; }
+    public string License { get; init; } = "MIT";
 }
 
-[Injectable(TypePriority = OnLoadOrder.PreSptModLoader + 1)]
-public class ChangeSeason(ConfigServer configServer, ISptLogger<ChangeSeason> logger, ModHelper modHelper) : IOnLoad {
-    private readonly WeatherConfig _weatherConfig = configServer.GetConfig<WeatherConfig>();
+[Injectable(TypePriority = OnLoadOrder.Preload + 1)]
+public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> logger, ModHelper modHelper) : IOnLoad {
+    private readonly WeatherConfig _weatherConfig = weatherConfig;
     private readonly int[] seasonsArray = [0, 1, 4, 6, 2, 5, 3];
     private ModState _modState = new();
 
-    public Task OnLoad() {
+    public Task OnLoadAsync(CancellationToken cancellationToken) {
+        cancellationToken.ThrowIfCancellationRequested();
         var pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
         var config = modHelper.GetJsonDataFromFile<ModConfig>(pathToMod, "config.json");
         // get season, override season
@@ -63,16 +63,16 @@ public class ChangeSeason(ConfigServer configServer, ISptLogger<ChangeSeason> lo
             if (seasonEnum is Season.AUTUMN or Season.SPRING or Season.SPRING_EARLY or Season.AUTUMN_LATE or Season.WINTER) {
                 var seasonWeatherKey = "DEMI";
                 if (seasonEnum is Season.WINTER) { seasonWeatherKey = "WINTER"; }
-                var presetWeightNode = root["Presets"][seasonWeatherKey] as JsonObject;
+                var presetWeightNode = root?["Presets"]?[seasonWeatherKey] as JsonObject;
                 if (presetWeightNode is not null) {
                     foreach (var kvp in presetWeightNode) {
                         var key = kvp.Key;
                         if (kvp.Value is JsonNode node)
                         {
                             var value = node.Deserialize<SPTarkov.Server.Core.Models.Spt.Config.PresetWeights>();
-                            if (value != null)
+                            if (value != null && _weatherConfig.Weather.PresetWeights is { } presetWeights)
                             {
-                                _weatherConfig.Weather.PresetWeights[key] = value;
+                                presetWeights[key] = value;
                             }
                         }
                     }
@@ -201,8 +201,8 @@ public class ModConfig {
 }
 
 public class ModState {
-    public string StartDate { get; set; }
-    public string EndDate { get; set; }
+    public string StartDate { get; set; } = string.Empty;
+    public string EndDate { get; set; } = string.Empty;
     public int CurrentSeason { get; set; }
 }
 
