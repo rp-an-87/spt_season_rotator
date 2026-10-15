@@ -3,22 +3,28 @@ using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers.Server;
+using SPTarkov.Server.Core.Models.Eft.Match;
 using SPTarkov.Server.Core.Models.Spt.Config;
 using SPTarkov.Server.Core.Models.Spt.Mod;
+using SPTarkov.Server.Core.Utils;
+using SPTarkov.Server.Web;
+using SPTarkov.Server.Web.Models.Configs;
+using SPTarkov.Server.Web.Services;
 using System.Reflection;
-using System.Text.Json.Nodes;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Season = SPTarkov.Server.Core.Models.Enums.Season;
+
 namespace SeasonRotator;
 
-public record ModMetadata : IModMetadata{
-    public string ModGuid { get; init; } = "com.turbodestroyer.seasonrotator";
-    public string Name { get; init; } = "SeasonRotator";
+public record ModMetadata : IModMetadata
+{
+    public string ModGuid { get; init; } = "com.turbodestroyer.seasonrotator.raids";
+    public string Name { get; init; } = "SeasonRotator (raid-based)";
     public string Author { get; init; } = "turbodestroyer";
     public List<string>? Contributors { get; init; }
-    public SemanticVersioning.Version Version { get; init; } = new("1.0.0");
+    public SemanticVersioning.Version Version { get; init; } = new("1.1.0");
     public SemanticVersioning.Range SptVersion { get; init; } = new("~4.1.0");
-
     public bool HasPrepatcher { get; init; }
     public List<string>? Incompatibilities { get; init; }
     public Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
@@ -26,184 +32,247 @@ public record ModMetadata : IModMetadata{
     public string License { get; init; } = "MIT";
 }
 
-[Injectable(TypePriority = OnLoadOrder.Preload + 1)]
-public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> logger, ModHelper modHelper) : IOnLoad {
-    private readonly WeatherConfig _weatherConfig = weatherConfig;
+[Injectable(InjectionType.Singleton, TypePriority = OnLoadOrder.Preload + 1)]
+public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> logger, ModHelper modHelper) : IOnLoad
+{
     private readonly int[] seasonsArray = [0, 1, 4, 6, 2, 5, 3];
-    private ModState _modState = new();
+    private readonly object _lock = new();
+    private string _modPath = string.Empty;
+    private ModState _state = new();
 
-    public Task OnLoadAsync(CancellationToken cancellationToken) {
+    public Task OnLoadAsync(CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
-        var pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
-        var config = modHelper.GetJsonDataFromFile<ModConfig>(pathToMod, "config.json");
-        // get season, override season
-        var season = CurrentStateSeason(pathToMod, config);
-        var seasonEnum = (Season)season;
-        _weatherConfig.OverrideSeason = seasonEnum;
-        // override weather
-        // currently weather presets (enums) contain only 'sunny', 'cloudy' and 'rainy', so have to change them directly
-        if (config.UseCustomWeather) {
-            var root = modHelper.GetJsonDataFromFile<JsonNode>(pathToMod, "customWeather.json");
-            var weatherPresetWeightNode = root?["weatherPresetWeight"] as JsonObject;
-            if (weatherPresetWeightNode is not null) {
-                foreach (var kvp in weatherPresetWeightNode) {
-                    var seasonKey = kvp.Key;
-                    var valueObj = kvp.Value as JsonObject;
-                    var dict = new Dictionary<SPTarkov.Server.Core.Models.Spt.Config.WeatherPreset, double>();
-                    if (valueObj != null) {
-                        foreach (var inner in valueObj) {
-                            if (Enum.TryParse(inner.Key, true, out SPTarkov.Server.Core.Models.Spt.Config.WeatherPreset preset) && inner.Value is JsonValue jv && jv.TryGetValue<double>(out var w)) {
-                                dict[preset] = w;
-                            }
-                        }
-                    }
-                    _weatherConfig.Weather.WeatherPresetWeight[seasonKey] = dict;
-                }
-            }
-            if (seasonEnum is Season.AUTUMN or Season.SPRING or Season.SPRING_EARLY or Season.AUTUMN_LATE or Season.WINTER) {
-                var seasonWeatherKey = "DEMI";
-                if (seasonEnum is Season.WINTER) { seasonWeatherKey = "WINTER"; }
-                var presetWeightNode = root?["Presets"]?[seasonWeatherKey] as JsonObject;
-                if (presetWeightNode is not null) {
-                    foreach (var kvp in presetWeightNode) {
-                        var key = kvp.Key;
-                        if (kvp.Value is JsonNode node)
-                        {
-                            var value = node.Deserialize<SPTarkov.Server.Core.Models.Spt.Config.PresetWeights>();
-                            if (value != null && _weatherConfig.Weather.PresetWeights is { } presetWeights)
-                            {
-                                presetWeights[key] = value;
-                            }
-                        }
-                    }
-                }
-            }
+
+        _modPath = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
+        var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+
+        lock (_lock)
+        {
+            LoadOrCreateState(config);
+            ApplySeason(config);
         }
-        logger.Info("[Season Rotator] " + _weatherConfig.OverrideSeason?.ToString() + " will end on " + _modState.EndDate);
+
+        LogStatus(config);
         return Task.CompletedTask;
     }
 
-    // Returns the current season based on the state file, or creates a new state file if it doesn't exist
-    private int CurrentStateSeason(string modPath, ModConfig config) {
-        var stateFilePath = Path.Combine(modPath, "state.json");
-        if (!File.Exists(stateFilePath)) {
-            // if state file does not exist, create it and set the season to be the next one after the current season
-            var currentSeason = GetCurrentDefaultSeason(modPath);
-            var currentSeasonEnum = (Season)currentSeason;
-            var startDate = DateTime.Now;
-            var currentSeasonIndex = seasonsArray.ToList().IndexOf(currentSeason);
-            var newSeasonIndex = (currentSeasonIndex + 1) % seasonsArray.Length;
-            var newSeason = seasonsArray[newSeasonIndex];
-            var newSeasonEnum = (Season)newSeason;
-            var seasonLength = config.SeasonsLengths.GetValueOrDefault(newSeasonEnum, 7);
-            
-            // Skip seasons with 0 length
-            var attempts = 0;
-            while (seasonLength == 0 && attempts < seasonsArray.Length) {
-                newSeasonIndex = (newSeasonIndex + 1) % seasonsArray.Length;
-                newSeason = seasonsArray[newSeasonIndex];
-                newSeasonEnum = (Season)newSeason;
-                seasonLength = config.SeasonsLengths.GetValueOrDefault(newSeasonEnum, 7);
-                attempts++;
-            }
-            if (seasonLength == 0) {
-                seasonLength = 7; 
-            }
-            var endDDate = startDate.AddDays(seasonLength);
-            logger.Info("[Season Rotator] The state file not found, creating a new one. The old season was " + currentSeasonEnum.ToString());
-            var newState = new ModState {
-                StartDate = startDate.ToString("yyyy-MM-dd"),
-                EndDate = endDDate.ToString("yyyy-MM-dd"),
-                CurrentSeason = newSeason
-            };
-            ModExtensions.SaveJsonDataToFile(modHelper, modPath, "state.json", newState);
-            _modState = newState;
-            return newSeason;
-        } 
-        // if state file exists, check if the season has expired
-        var state = modHelper.GetJsonDataFromFile<ModState>(modPath, "state.json");
-        var today = DateTime.Now;
-        var endDate = DateTime.Parse(state.EndDate);
-        if (today > endDate) {
-            // season has expired, calculate how many seasons have passed and set the new season
-            var currentSeasonEnum = (Season)state.CurrentSeason;
-            var currentSeasonIndex = seasonsArray.ToList().IndexOf(state.CurrentSeason);
-            var daysOverdue = (today - endDate).TotalDays;
-            var seasonsPassed = 0;
-            var accumulatedDays = 0.0;
-            var tempIndex = currentSeasonIndex;
-            while (accumulatedDays < daysOverdue) {
-                tempIndex = (tempIndex + 1) % seasonsArray.Length;
-                var tempSeasonEnum = (Season)seasonsArray[tempIndex];
-                var seasonLength = config.SeasonsLengths.GetValueOrDefault(tempSeasonEnum, 7);
-                accumulatedDays += seasonLength;
-                seasonsPassed++;
-            }
-            
-            var newSeasonIndex = (currentSeasonIndex + seasonsPassed) % seasonsArray.Length;
-            var newSeason = seasonsArray[newSeasonIndex];
-            var newSeasonEnum = (Season)newSeason;
-            var newSeasonLength = config.SeasonsLengths.GetValueOrDefault(newSeasonEnum, 7);
-            
-            // Skip seasons with 0 length
-            var skipAttempts = 0;
-            while (newSeasonLength == 0 && skipAttempts < seasonsArray.Length) {
-                newSeasonIndex = (newSeasonIndex + 1) % seasonsArray.Length;
-                newSeason = seasonsArray[newSeasonIndex];
-                newSeasonEnum = (Season)newSeason;
-                newSeasonLength = config.SeasonsLengths.GetValueOrDefault(newSeasonEnum, 7);
-                skipAttempts++;
+    // Called by the router every time a raid ends
+    public void RegisterRaidFinished()
+    {
+        lock (_lock)
+        {
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+
+            _state.RaidsInSeason++;
+            _state.TotalRaids++;
+
+            var changed = AdvanceIfDue(config);
+            ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+
+            if (changed)
+            {
+                ApplySeason(config);
             }
 
-            if (newSeasonLength == 0) {
-                newSeasonLength = 7; 
-            }
-            
-            var newStartDate = endDate.AddDays(accumulatedDays - newSeasonLength);
-            var newEndDate = newStartDate.AddDays(newSeasonLength);
-            
-            state = new ModState {
-                StartDate = newStartDate.ToString("yyyy-MM-dd"),
-                EndDate = newEndDate.ToString("yyyy-MM-dd"),
-                CurrentSeason = newSeason
-            };
-            ModExtensions.SaveJsonDataToFile(modHelper, modPath, "state.json", state);
+            LogStatus(config);
         }
-        _modState = state;
-        return state.CurrentSeason;
     }
 
-    // Returns the current season based on the default season dates in the SPT weather config
-    private int GetCurrentDefaultSeason(string modPath) {
-        if (_weatherConfig.OverrideSeason.HasValue && seasonsArray.Contains((int)_weatherConfig.OverrideSeason.Value)) {
-            return (int)_weatherConfig.OverrideSeason.Value;
+    private void LoadOrCreateState(ModConfig config)
+    {
+        var stateFilePath = Path.Combine(_modPath, "state.json");
+
+        if (File.Exists(stateFilePath))
+        {
+            _state = modHelper.GetJsonDataFromFile<ModState>(_modPath, "state.json");
+            // season lengths may have been edited in config since the last run
+            if (AdvanceIfDue(config))
+            {
+                ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+            }
+            return;
         }
 
-        var seasonDates = _weatherConfig.SeasonDates;
+        // First run: start on the season after the current default one (same as the original mod)
+        var currentSeason = GetCurrentDefaultSeason();
+        var idx = Array.IndexOf(seasonsArray, currentSeason);
+        _state = new ModState
+        {
+            CurrentSeason = seasonsArray[(idx + 1) % seasonsArray.Length],
+            RaidsInSeason = 0,
+            TotalRaids = 0
+        };
+        AdvanceIfDue(config); // skips seasons with a length of 0
+        ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+        logger.Info("[Season Rotator] No state file found, created a new one. Previous season was " + (Season)currentSeason);
+    }
+
+    // Moves to the next season while the current one is finished (or disabled with length 0).
+    // Returns true if the season changed.
+    private bool AdvanceIfDue(ModConfig config)
+    {
+        var changed = false;
+
+        for (var guard = 0; guard <= seasonsArray.Length; guard++)
+        {
+            var length = LengthOf(config, _state.CurrentSeason);
+            if (length > 0 && _state.RaidsInSeason < length)
+            {
+                break;
+            }
+
+            var idx = Array.IndexOf(seasonsArray, _state.CurrentSeason);
+            _state.CurrentSeason = seasonsArray[(idx + 1) % seasonsArray.Length];
+            _state.RaidsInSeason = 0;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static int LengthOf(ModConfig config, int season)
+    {
+        var name = ((Season)season).ToString();
+        foreach (var (key, length) in config.SeasonsLengths)
+        {
+            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return length;
+            }
+        }
+        return 7;
+    }
+
+    private void ApplySeason(ModConfig config)
+    {
+        var seasonEnum = (Season)_state.CurrentSeason;
+        weatherConfig.OverrideSeason = seasonEnum;
+
+        if (!config.UseCustomWeather)
+        {
+            return;
+        }
+
+        var root = modHelper.GetJsonDataFromFile<JsonNode>(_modPath, "customWeather.json");
+        var weatherPresetWeightNode = root?["weatherPresetWeight"] as JsonObject;
+
+        if (weatherPresetWeightNode is not null)
+        {
+            foreach (var kvp in weatherPresetWeightNode)
+            {
+                var dict = new Dictionary<WeatherPreset, double>();
+                if (kvp.Value is JsonObject valueObj)
+                {
+                    foreach (var inner in valueObj)
+                    {
+                        if (Enum.TryParse(inner.Key, true, out WeatherPreset preset)
+                            && inner.Value is JsonValue jv && jv.TryGetValue<double>(out var w))
+                        {
+                            dict[preset] = w;
+                        }
+                    }
+                }
+                weatherConfig.Weather.WeatherPresetWeight[kvp.Key] = dict;
+            }
+        }
+
+        if (seasonEnum is Season.AUTUMN or Season.SPRING or Season.SPRING_EARLY or Season.AUTUMN_LATE or Season.WINTER)
+        {
+            var seasonWeatherKey = seasonEnum is Season.WINTER ? "WINTER" : "DEMI";
+            if (root?["Presets"]?[seasonWeatherKey] is JsonObject presetWeightNode)
+            {
+                foreach (var kvp in presetWeightNode)
+                {
+                    if (kvp.Value is JsonNode node)
+                    {
+                        var value = node.Deserialize<PresetWeights>();
+                        if (value != null && weatherConfig.Weather.PresetWeights is { } presetWeights)
+                        {
+                            presetWeights[kvp.Key] = value;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void LogStatus(ModConfig config)
+    {
+        var length = LengthOf(config, _state.CurrentSeason);
+        logger.Info($"[Season Rotator] {(Season)_state.CurrentSeason}: raid {_state.RaidsInSeason}/{length} completed " +
+                    $"(lifetime raids: {_state.TotalRaids})");
+    }
+
+    private int GetCurrentDefaultSeason()
+    {
+        if (weatherConfig.OverrideSeason.HasValue && seasonsArray.Contains((int)weatherConfig.OverrideSeason.Value))
+        {
+            return (int)weatherConfig.OverrideSeason.Value;
+        }
+
         var md = DateTime.Now.Month * 100 + DateTime.Now.Day;
-        foreach (var s in seasonDates) {
+        foreach (var s in weatherConfig.SeasonDates)
+        {
             var start = s.StartMonth.GetValueOrDefault() * 100 + s.StartDay.GetValueOrDefault();
             var end = s.EndMonth.GetValueOrDefault() * 100 + s.EndDay.GetValueOrDefault();
             var wraps = end < start;
             var inRange = wraps ? md >= start || md <= end : md >= start && md <= end;
-            if (inRange) {
+            if (inRange)
+            {
                 return (int)s.SeasonType.GetValueOrDefault();
             }
         }
-
         return 0;
     }
 }
 
-public class ModConfig {
-    public Dictionary<Season, int> SeasonsLengths { get; set; } = new();
+// Lets the web config editor (/configs) list and edit this mod's config.json
+[Injectable(InjectionType.Singleton)]
+public class SeasonRotatorConfigProvider(ModHelper modHelper) : IConfigEditorConfigProvider
+{
+    public IEnumerable<ConfigEditorConfigRegistration> GetConfigs()
+    {
+        var meta = new ModMetadata();
+        var modPath = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
+        yield return ConfigEditorConfigRegistration.Create(
+            meta.ModGuid,
+            meta.Name,
+            modHelper.GetJsonDataFromFile<ModConfig>(modPath, "config.json"),
+            Path.Combine(modPath, "config.json"));
+    }
+}
+
+// Hooks the end-of-raid request so every finished raid is counted.
+// NOTE: RouteAction / StaticRouter signatures can differ slightly between SPT 4.x builds -
+// if this doesn't compile, check the signature against another 4.1 mod that uses StaticRouter.
+[Injectable]
+public class RaidCounterRouter(JsonUtil jsonUtil, ChangeSeason changeSeason) : StaticRouter(jsonUtil,
+[
+    new RouteAction<EndLocalRaidRequestData>(
+        "/client/match/local/end",
+        async (url, info, sessionId, output, _) =>
+        {
+            changeSeason.RegisterRaidFinished();
+            return output!;
+        })
+])
+{
+}
+
+public class ModConfig
+{
+    // Now measured in RAIDS instead of days. 0 = skip this season.
+    // Keyed by season name (WINTER, SPRING, ...) so the config editor shows names, not enum numbers.
+    public Dictionary<string, int> SeasonsLengths { get; set; } = new();
     public bool UseCustomWeather { get; set; }
 }
 
-public class ModState {
-    public string StartDate { get; set; } = string.Empty;
-    public string EndDate { get; set; } = string.Empty;
+public class ModState
+{
     public int CurrentSeason { get; set; }
+    public int RaidsInSeason { get; set; }
+    public int TotalRaids { get; set; }
 }
 
 public static class ModExtensions
@@ -211,7 +280,7 @@ public static class ModExtensions
     public static void SaveJsonDataToFile<T>(this ModHelper modHelper, string pathToFile, string fileName, T data)
     {
         var fullPath = Path.Combine(pathToFile, fileName);
-        var json = System.Text.Json.JsonSerializer.Serialize(data, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(fullPath, json);
     }
 }

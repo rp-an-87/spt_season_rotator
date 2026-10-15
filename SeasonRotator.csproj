@@ -12,21 +12,18 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
-<ItemGroup>
-    <PackageReference Include="SPTarkov.Common" Version="4.1.2" />
-    <PackageReference Include="SPTarkov.DI" Version="4.1.2" />
-    <PackageReference Include="SPTarkov.Server.Core" Version="4.1.2" />
+  <ItemGroup>
+    <PackageReference Include="SPTushonka.Common" Version="4.1.6"/>
+    <PackageReference Include="SPTushonka.DI" Version="4.1.6"/>
+    <PackageReference Include="SPTushonka.Server.Core" Version="4.1.6"/>
+    <PackageReference Include="SPTarkov.Server.Web" Version="4.1.2" ExcludeAssets="runtime"/>
   </ItemGroup>
 
-    <ItemGroup>
-    <None Include="$(MSBuildProjectFullPath).user" Condition="Exists('$(MSBuildProjectFullPath).user')" />
-  </ItemGroup>
-
-  <PropertyGroup>
-    <ModsDirectoryPath>$(SPTPath)\user\mods\$(MSBuildProjectName)</ModsDirectoryPath>
-  </PropertyGroup>
 
   <Target Name="CopyToSPT" AfterTargets="AfterBuild" Condition="'$(SPTPath)' != ''">
+    <PropertyGroup>
+      <ModsDirectoryPath>$(SPTPath)\user\mods\$(MSBuildProjectName)</ModsDirectoryPath>
+    </PropertyGroup>
     <Message Importance="high" Text="Copying mods to $(ModsDirectoryPath)" />
     <ItemGroup>
       <FilesToCopy Include="$(OutputPath)$(TargetName)$(TargetExt)" />
