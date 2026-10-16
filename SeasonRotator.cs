@@ -39,6 +39,8 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     private readonly object _lock = new();
     private string _modPath = string.Empty;
     private ModState _state = new();
+    private readonly Dictionary<string, (string Location, bool IsScav)> _raidInfo = new();
+    private static readonly HashSet<string> FactoryLocations = new(StringComparer.OrdinalIgnoreCase) { "factory4_day", "factory4_night" };
 
     public Task OnLoadAsync(CancellationToken cancellationToken)
     {
@@ -57,15 +59,29 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         return Task.CompletedTask;
     }
 
+    // Called by the router when a raid starts, so we know which map the matching end-of-raid belongs to
+    public void RegisterRaidStarted(string sessionId, string? location, string? playerSide)
+    {
+        lock (_lock)
+        {
+            _raidInfo[sessionId] = (location ?? string.Empty, string.Equals(playerSide, "Savage", StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
     // Called by the router every time a raid ends
-    public void RegisterRaidFinished()
+    public void RegisterRaidFinished(string sessionId)
     {
         lock (_lock)
         {
             var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
 
-            _state.RaidsInSeason++;
+            _raidInfo.Remove(sessionId, out var raid);
             _state.TotalRaids++;
+
+            if (CountsTowardSeason(config, raid.Location, raid.IsScav))
+            {
+                _state.RaidsInSeason++;
+            }
 
             var changed = AdvanceIfDue(config);
             ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
@@ -77,6 +93,31 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
 
             LogStatus(config);
         }
+    }
+
+    // Factory raids are short, so they can be set to only advance the season every N factory raids
+    // (day and night share one counter). FactoryRaidsPerAdvance <= 1 keeps the normal behavior.
+    private bool CountsTowardSeason(ModConfig config, string? location, bool isScav)
+    {
+        if (isScav && !config.ScavRaidsAdvanceSeason)
+        {
+            return false;
+        }
+
+        var isFactory = location is not null && FactoryLocations.Contains(location);
+        if (!isFactory || config.FactoryRaidsPerAdvance <= 1)
+        {
+            return true;
+        }
+
+        _state.FactoryRaidsSinceAdvance++;
+        if (_state.FactoryRaidsSinceAdvance < config.FactoryRaidsPerAdvance)
+        {
+            return false;
+        }
+
+        _state.FactoryRaidsSinceAdvance = 0;
+        return true;
     }
 
     private void LoadOrCreateState(ModConfig config)
@@ -125,6 +166,7 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
             var idx = Array.IndexOf(seasonsArray, _state.CurrentSeason);
             _state.CurrentSeason = seasonsArray[(idx + 1) % seasonsArray.Length];
             _state.RaidsInSeason = 0;
+            _state.FactoryRaidsSinceAdvance = 0;
             changed = true;
         }
 
@@ -201,7 +243,10 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     {
         var length = LengthOf(config, _state.CurrentSeason);
         logger.Info($"[Season Rotator] {(Season)_state.CurrentSeason}: raid {_state.RaidsInSeason}/{length} completed " +
-                    $"(lifetime raids: {_state.TotalRaids})");
+                    $"(lifetime raids: {_state.TotalRaids})" +
+                    (config.FactoryRaidsPerAdvance > 1
+                        ? $", factory raids toward next advance: {_state.FactoryRaidsSinceAdvance}/{config.FactoryRaidsPerAdvance}"
+                        : string.Empty));
     }
 
     private int GetCurrentDefaultSeason()
@@ -243,17 +288,24 @@ public class SeasonRotatorConfigProvider(ModHelper modHelper) : IConfigEditorCon
     }
 }
 
-// Hooks the end-of-raid request so every finished raid is counted.
+// Hooks the start-of-raid request (to learn the map) and the end-of-raid request so every finished raid is counted.
 // NOTE: RouteAction / StaticRouter signatures can differ slightly between SPT 4.x builds -
 // if this doesn't compile, check the signature against another 4.1 mod that uses StaticRouter.
 [Injectable]
 public class RaidCounterRouter(JsonUtil jsonUtil, ChangeSeason changeSeason) : StaticRouter(jsonUtil,
 [
+    new RouteAction<StartLocalRaidRequestData>(
+        "/client/match/local/start",
+        async (url, info, sessionId, output, _) =>
+        {
+            changeSeason.RegisterRaidStarted(sessionId.ToString(), info.Location, info.PlayerSide);
+            return output!;
+        }),
     new RouteAction<EndLocalRaidRequestData>(
         "/client/match/local/end",
         async (url, info, sessionId, output, _) =>
         {
-            changeSeason.RegisterRaidFinished();
+            changeSeason.RegisterRaidFinished(sessionId.ToString());
             return output!;
         })
 ])
@@ -266,6 +318,13 @@ public class ModConfig
     // Keyed by season name (WINTER, SPRING, ...) so the config editor shows names, not enum numbers.
     public Dictionary<string, int> SeasonsLengths { get; set; } = new();
     public bool UseCustomWeather { get; set; }
+
+    // Factory (day and night) raids only count toward the season every N factory raids.
+    // 1 (default) = disabled, every raid counts.
+    public int FactoryRaidsPerAdvance { get; set; } = 1;
+
+    // true (default) = scav raids count toward the season like any other raid; false = only PMC raids do.
+    public bool ScavRaidsAdvanceSeason { get; set; } = true;
 }
 
 public class ModState
@@ -273,6 +332,8 @@ public class ModState
     public int CurrentSeason { get; set; }
     public int RaidsInSeason { get; set; }
     public int TotalRaids { get; set; }
+    // Factory raids played since the last one that counted toward the season
+    public int FactoryRaidsSinceAdvance { get; set; }
 }
 
 public static class ModExtensions

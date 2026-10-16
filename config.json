@@ -8,5 +8,7 @@
     "AUTUMN_LATE": 7,
     "STORM": 1
   },
-  "UseCustomWeather": true
+  "UseCustomWeather": true,
+  "FactoryRaidsPerAdvance": 1,
+  "ScavRaidsAdvanceSeason": true
 }
