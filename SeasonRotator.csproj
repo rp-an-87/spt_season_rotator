@@ -29,6 +29,11 @@
       <FilesToCopy Include="$(OutputPath)$(TargetName)$(TargetExt)" />
       <FilesToCopy Include="$(OutputPath)$(TargetName).pdb" />
     </ItemGroup>
+    <!-- .orig = the first DLL ever replaced (never overwritten); .bak = the previous deploy. A loaded DLL can be renamed but not overwritten, so the old one is moved aside first. -->
+    <MakeDir Directories="$(ModsDirectoryPath)" />
+    <Copy SourceFiles="$(ModsDirectoryPath)\$(TargetName)$(TargetExt)" DestinationFiles="$(ModsDirectoryPath)\$(TargetName)$(TargetExt).orig" Condition="Exists('$(ModsDirectoryPath)\$(TargetName)$(TargetExt)') And !Exists('$(ModsDirectoryPath)\$(TargetName)$(TargetExt).orig')" />
+    <Delete Files="$(ModsDirectoryPath)\$(TargetName)$(TargetExt).bak" ContinueOnError="true" />
+    <Move SourceFiles="$(ModsDirectoryPath)\$(TargetName)$(TargetExt)" DestinationFiles="$(ModsDirectoryPath)\$(TargetName)$(TargetExt).bak" Condition="Exists('$(ModsDirectoryPath)\$(TargetName)$(TargetExt)')" />
     <Copy SourceFiles="@(FilesToCopy)" DestinationFolder="$(ModsDirectoryPath)" ContinueOnError="false" />
     <Message Text="Files copied" />
   </Target>
