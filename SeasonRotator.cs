@@ -17,7 +17,7 @@ using Season = SPTarkov.Server.Core.Models.Enums.Season;
 
 namespace SeasonRotator;
 
-public record ModMetadata : IModMetadata
+public record ModMetadata : IModMetadata, IModBlazorMetadata
 {
     public string ModGuid { get; init; } = "com.turbodestroyer.seasonrotator.raids";
     public string Name { get; init; } = "SeasonRotator (raid-based)";
@@ -30,6 +30,10 @@ public record ModMetadata : IModMetadata
     public Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
     public string? Url { get; init; }
     public string License { get; init; } = "MIT";
+
+    public string? WWWRootUrl { get; init; }
+    public string? HomePage { get; init; } = "/season-rotator";
+    public string? HomePageDescription { get; init; } = "Current season, raid counter and settings.";
 }
 
 [Injectable(InjectionType.Singleton, TypePriority = OnLoadOrder.Preload + 1)]
@@ -57,6 +61,79 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
 
         LogStatus(config);
         return Task.CompletedTask;
+    }
+
+    // Snapshot for the web page
+    public SeasonStatus GetStatus()
+    {
+        lock (_lock)
+        {
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+            return new SeasonStatus
+            {
+                Season = ((Season)_state.CurrentSeason).ToString(),
+                SeasonLength = LengthOf(config, _state.CurrentSeason),
+                RaidsInSeason = _state.RaidsInSeason,
+                TotalRaids = _state.TotalRaids,
+                FactoryRaidsSinceAdvance = _state.FactoryRaidsSinceAdvance,
+                FactoryRaidsPerAdvance = config.FactoryRaidsPerAdvance,
+                NextSeason = ((Season)NextSeasonAfter(config, _state.CurrentSeason)).ToString(),
+                SeasonOrder = seasonsArray.Select(season => ((Season)season).ToString()).ToList()
+            };
+        }
+    }
+
+    public ModConfig GetConfig()
+    {
+        lock (_lock)
+        {
+            return modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+        }
+    }
+
+    // Saves the config and applies it right away (a shorter season may already be over, custom weather is re-applied)
+    public void SaveConfig(ModConfig config)
+    {
+        lock (_lock)
+        {
+            var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.Combine(_modPath, "config.json"), json);
+
+            AdvanceIfDue(config);
+            ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+            ApplySeason(config);
+            LogStatus(config);
+        }
+    }
+
+    // Ends the current season now and moves to the next one that is enabled
+    public void SkipSeason()
+    {
+        lock (_lock)
+        {
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+            _state.CurrentSeason = NextSeasonAfter(config, _state.CurrentSeason);
+            _state.RaidsInSeason = 0;
+            _state.FactoryRaidsSinceAdvance = 0;
+            ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+            ApplySeason(config);
+            LogStatus(config);
+        }
+    }
+
+    // The season that follows the given one, skipping disabled seasons (length 0)
+    private int NextSeasonAfter(ModConfig config, int season)
+    {
+        var idx = Array.IndexOf(seasonsArray, season);
+        for (var step = 1; step <= seasonsArray.Length; step++)
+        {
+            var next = seasonsArray[(idx + step) % seasonsArray.Length];
+            if (LengthOf(config, next) > 0)
+            {
+                return next;
+            }
+        }
+        return season;
     }
 
     // Called by the router when a raid starts, so we know which map the matching end-of-raid belongs to
@@ -325,6 +402,18 @@ public class ModConfig
 
     // true (default) = scav raids count toward the season like any other raid; false = only PMC raids do.
     public bool ScavRaidsAdvanceSeason { get; set; } = true;
+}
+
+public class SeasonStatus
+{
+    public string Season { get; set; } = string.Empty;
+    public int SeasonLength { get; set; }
+    public int RaidsInSeason { get; set; }
+    public int TotalRaids { get; set; }
+    public int FactoryRaidsSinceAdvance { get; set; }
+    public int FactoryRaidsPerAdvance { get; set; }
+    public string NextSeason { get; set; } = string.Empty;
+    public List<string> SeasonOrder { get; set; } = [];
 }
 
 public class ModState

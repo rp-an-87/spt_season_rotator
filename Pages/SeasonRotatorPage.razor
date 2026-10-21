@@ -1,0 +1,109 @@
+@page "/season-rotator"
+@attribute [Authorize(Policy = "Administrator")]
+@rendermode InteractiveServer
+@layout BaseMudBlazorLayout
+@inject ChangeSeason Rotator
+@inject ISnackbar Snackbar
+
+<PageTitle>Season Rotator</PageTitle>
+
+<div class="spt-page">
+    <MudContainer MaxWidth="MaxWidth.Large" Class="pa-6">
+        <MudStack Spacing="4">
+            <MudText Typo="Typo.h3">Season Rotator</MudText>
+
+            @if (_status is not null && _config is not null)
+            {
+                <MudPaper Elevation="0" Class="spt-panel pa-5">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.h5">Current season</MudText>
+                        <MudText Typo="Typo.h4" Class="spt-accent">@_status.Season</MudText>
+                        <MudText>
+                            Raid @_status.RaidsInSeason of @(_status.SeasonLength > 0 ? _status.SeasonLength.ToString() : "unlimited")
+                            · next season: @_status.NextSeason
+                        </MudText>
+                        <MudProgressLinear Value="@SeasonProgress" Color="Color.Warning" Size="Size.Medium" />
+                        <MudText Typo="Typo.body2">
+                            Lifetime raids: @_status.TotalRaids
+                            @if (_status.FactoryRaidsPerAdvance > 1)
+                            {
+                                <span> · factory raids toward the next advance: @_status.FactoryRaidsSinceAdvance / @_status.FactoryRaidsPerAdvance</span>
+                            }
+                        </MudText>
+                        <MudStack Row>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Warning" OnClick="SkipSeason">Skip to next season</MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <MudPaper Elevation="0" Class="spt-panel pa-5">
+                    <MudStack Spacing="3">
+                        <MudText Typo="Typo.h5">Settings</MudText>
+                        <MudText Typo="Typo.body2">Raids each season lasts, in rotation order. 0 skips the season.</MudText>
+                        <MudGrid>
+                            @foreach (var season in _status.SeasonOrder)
+                            {
+                                var name = season;
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudNumericField T="int" Label="@name" Min="0" Variant="Variant.Outlined"
+                                                     Value="@LengthOf(name)" ValueChanged="@(value => SetLength(name, value))" />
+                                </MudItem>
+                            }
+                        </MudGrid>
+
+                        <MudSwitch T="bool" Color="Color.Warning" Label="Use the custom weather presets (customWeather.json)"
+                                   @bind-Value="_config.UseCustomWeather" />
+                        <MudSwitch T="bool" Color="Color.Warning" Label="Scav raids count toward the season"
+                                   @bind-Value="_config.ScavRaidsAdvanceSeason" />
+                        <MudNumericField T="int" Label="Factory raids per advance" Min="1" Variant="Variant.Outlined"
+                                         HelperText="Factory (day and night share one counter) raids only count toward the season every N factory raids. 1 = every raid counts."
+                                         @bind-Value="_config.FactoryRaidsPerAdvance" />
+
+                        <MudStack Row>
+                            <MudButton Variant="Variant.Filled" Color="Color.Warning" OnClick="Save">Save</MudButton>
+                            <MudButton Variant="Variant.Text" OnClick="Reload">Reset</MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    </MudContainer>
+</div>
+
+@code {
+    private SeasonStatus? _status;
+    private ModConfig? _config;
+
+    protected override void OnInitialized() => Reload();
+
+    private double SeasonProgress => _status is { SeasonLength: > 0 } status ? Math.Min(100.0, 100.0 * status.RaidsInSeason / status.SeasonLength) : 0;
+
+    private void Reload()
+    {
+        _status = Rotator.GetStatus();
+        _config = Rotator.GetConfig();
+    }
+
+    private int LengthOf(string season) =>
+        _config!.SeasonsLengths.FirstOrDefault(pair => string.Equals(pair.Key, season, StringComparison.OrdinalIgnoreCase)).Value;
+
+    private void SetLength(string season, int value)
+    {
+        var key = _config!.SeasonsLengths.Keys.FirstOrDefault(existing => string.Equals(existing, season, StringComparison.OrdinalIgnoreCase)) ?? season;
+        _config.SeasonsLengths[key] = Math.Max(0, value);
+    }
+
+    private void Save()
+    {
+        Rotator.SaveConfig(_config!);
+        Reload();
+        Snackbar.Add("Saved and applied.", Severity.Success);
+    }
+
+    private void SkipSeason()
+    {
+        Rotator.SkipSeason();
+        Reload();
+        Snackbar.Add("Moved to the next season.", Severity.Info);
+    }
+}
