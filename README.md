@@ -19,6 +19,15 @@ A weather event replaces the weather of one raid (the whole forecast the raid re
 
 An event is used up when the raid it was on finishes, so leaving before the raid starts does not waste it. Factory, Labs and Labyrinth raids (no outdoor weather) never get one, and scav raids don't either when `ScavRaidsAdvanceSeason` is `false`; the event waits for the next raid that can. The server log says when events are planned, applied and finished. It uses a Harmony patch on `WeatherController.GenerateLocal`.
 
+## Client companion (`Client\`)
+
+A small BepInEx plugin (`SeasonRotator.Client`, net471, goes in `BepInEx\plugins\SeasonRotator.Client\`). **Install it for fog events to be visible.** The server sends the event's fog and the game receives it, but in normal weather the game only gives the classic fog renderer its density while the weather debug mode (the Time & Weather Changer panel) is on, so the fog stayed invisible. The plugin does the same assignment in normal weather (a postfix on `WeatherController.ControlScattering`). Settings (F12, restart needed):
+
+- `1. Weather / 1. Draw server fog in normal weather` (default on): affects all fog, natural fog too.
+- `2. Logging / 1. Log raid weather` (default on): writes to the BepInEx log the first weather node the game receives at raid start and, six times 5 seconds apart, the fog, rain and clouds it is drawing. The server log has a matching `Event weather sent` line.
+
+Build: `dotnet build Client\SeasonRotator.Client.csproj -c Release`; `SptDir` goes in `Client\SeasonRotator.Client.csproj.user`. Only the fog line is fixed so far; the other event values (rain, wind, temperature) still need checking in game.
+
 ## Web page
 
 The mod has its own page in the server's web UI (card "SeasonRotator (raid-based)" under Mod pages, or `/season-rotator`, admin only). It shows the current season, the raid counter, the next season and the factory counter, edits the settings above (applied right away on save) and has a button to skip to the next season. The same `config.json` is also listed in the generic config editor (`/configs`).

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net471</TargetFramework>
+    <AssemblyName>SeasonRotator.Client</AssemblyName>
+    <RootNamespace>SeasonRotator.Client</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Version>1.0.0</Version>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- SptDir comes from SeasonRotator.Client.csproj.user (the folder that contains BepInEx and EscapeFromTarkov_Data); it is loaded after this body, so it is only used in items/targets -->
+  <ItemGroup>
+    <Reference Include="0Harmony"><HintPath>$(SptDir)\BepInEx\core\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx"><HintPath>$(SptDir)\BepInEx\core\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SPT.Reflection"><HintPath>$(SptDir)\BepInEx\plugins\spt\spt-reflection.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(SptDir)\EscapeFromTarkov_Data\Managed\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(SptDir)\EscapeFromTarkov_Data\Managed\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(SptDir)\EscapeFromTarkov_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <Target Name="CopyToSPT" AfterTargets="Build" Condition="'$(SptDir)' != ''">
+    <!-- .orig = the first DLL ever replaced (never overwritten); .bak = the previous deploy. A loaded DLL can be renamed but not overwritten, so the old one is moved aside first. -->
+    <MakeDir Directories="$(SptDir)\BepInEx\plugins\SeasonRotator.Client" />
+    <Copy SourceFiles="$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName)" DestinationFiles="$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName).orig" Condition="Exists('$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName)') And !Exists('$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName).orig')" />
+    <Delete Files="$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName).bak" ContinueOnError="true" />
+    <Move SourceFiles="$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName)" DestinationFiles="$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName).bak" Condition="Exists('$(SptDir)\BepInEx\plugins\SeasonRotator.Client\$(TargetFileName)')" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(SptDir)\BepInEx\plugins\SeasonRotator.Client" />
+    <Message Importance="high" Text="Copied to $(SptDir)\BepInEx\plugins\SeasonRotator.Client" />
+  </Target>
+
+</Project>

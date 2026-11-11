@@ -19,6 +19,14 @@
     <PackageReference Include="SPTarkov.Server.Web" Version="4.1.2" ExcludeAssets="runtime"/>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The client companion (BepInEx plugin, own project) lives in Client\ and must not be compiled into the server mod -->
+    <Compile Remove="Client\**" />
+    <Content Remove="Client\**" />
+    <EmbeddedResource Remove="Client\**" />
+    <None Remove="Client\**" />
+  </ItemGroup>
+
 
   <ItemGroup>
     <!-- The server's own copy (HarmonyX): the non-virtual raid weather method is patched at runtime. Not copied to the mod folder. -->
