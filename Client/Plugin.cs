@@ -30,6 +30,16 @@ namespace SeasonRotator.Client
 			Apply(new WeatherFogDrawPatch());
 			Apply(new WeatherNodesPatch());
 			Apply(new WeatherFogPatch());
+
+			// the F12 controls for the server mod; a failure here must not stop the plugin
+			try
+			{
+				Control.Setup(Config);
+			}
+			catch (System.Exception e)
+			{
+				Log.LogError("The F12 controls could not be set up: " + e);
+			}
 		}
 
 		// One failing patch must not stop the others

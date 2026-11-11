@@ -58,6 +58,9 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     private static readonly HashSet<string> NoWeatherLocations = new(StringComparer.OrdinalIgnoreCase) { "factory4_day", "factory4_night", "laboratory", "labyrinth" };
     // Sessions whose current raid is getting a weather event (it counts as used when that raid finishes)
     private readonly HashSet<string> _eventApplied = new();
+    // Sessions whose current raid is getting the forced event (ForcedEvent in the state): used up when that raid finishes,
+    // without touching the planned events
+    private readonly HashSet<string> _forcedApplied = new();
 
     public Task OnLoadAsync(CancellationToken cancellationToken)
     {
@@ -128,12 +131,77 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         lock (_lock)
         {
             var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
-            _state.CurrentSeason = NextSeasonAfter(config, _state.CurrentSeason);
-            _state.RaidsInSeason = 0;
-            _state.FactoryRaidsSinceAdvance = 0;
+            MoveToSeason(config, NextSeasonAfter(config, _state.CurrentSeason));
+        }
+    }
+
+    // Starts the given season now (raid counters of the season back to 0), like a skip. Caller holds _lock.
+    private void MoveToSeason(ModConfig config, int season)
+    {
+        _state.CurrentSeason = season;
+        _state.RaidsInSeason = 0;
+        _state.FactoryRaidsSinceAdvance = 0;
+        ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+        ApplySeason(config);
+        LogStatus(config);
+    }
+
+    // ---- Control from the client plugin (F12 buttons) -------------------------------------------------------------
+
+    public ControlInfo GetControlInfo()
+    {
+        lock (_lock)
+        {
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+            return new ControlInfo
+            {
+                Season = ((Season)_state.CurrentSeason).ToString(),
+                SeasonLength = LengthOf(config, _state.CurrentSeason),
+                RaidsInSeason = _state.RaidsInSeason,
+                Seasons = seasonsArray.Select(season => ((Season)season).ToString()).ToList(),
+                Events = LoadEvents().Keys.ToList(),
+                ForcedEvent = _state.ForcedEvent,
+                PlannedEventRaids = [.. _state.EventRaids],
+                PlannedEvent = _state.ActiveEvent,
+            };
+        }
+    }
+
+    // Sets the season directly (not only the enabled ones: it counts as disabled and moves on after its first raid when its length is 0)
+    public ControlResult SetSeason(string? name)
+    {
+        lock (_lock)
+        {
+            var season = seasonsArray.Cast<int?>().FirstOrDefault(s => string.Equals(((Season)s!.Value).ToString(), name, StringComparison.OrdinalIgnoreCase));
+            if (season is null)
+            {
+                return ControlResult.Fail($"Unknown season '{name}'");
+            }
+
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+            MoveToSeason(config, season.Value);
+            logger.Info($"[Season Rotator] Season set to {(Season)season.Value} from the client");
+            var disabled = LengthOf(config, season.Value) <= 0 ? " (disabled in the config, it ends after its first raid)" : string.Empty;
+            return ControlResult.Success($"Season set to {(Season)season.Value}{disabled}");
+        }
+    }
+
+    // Forces an event on the next outdoor raid. It is extra: the planned events of the season stay as they are.
+    public ControlResult ForceEvent(string? name)
+    {
+        lock (_lock)
+        {
+            var events = LoadEvents();
+            var match = events.Keys.FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                return ControlResult.Fail($"Unknown event '{name}'");
+            }
+
+            _state.ForcedEvent = match;
             ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
-            ApplySeason(config);
-            LogStatus(config);
+            logger.Info($"[Season Rotator] Weather event '{match}' forced for the next outdoor raid from the client");
+            return ControlResult.Success($"{match} will happen on your next outdoor raid");
         }
     }
 
@@ -159,6 +227,7 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         {
             _raidInfo[sessionId] = (location ?? string.Empty, string.Equals(playerSide, "Savage", StringComparison.OrdinalIgnoreCase));
             _eventApplied.Remove(sessionId);
+            _forcedApplied.Remove(sessionId);
         }
     }
 
@@ -170,7 +239,12 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
             var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
 
             _raidInfo.Remove(sessionId, out var raid);
-            if (_eventApplied.Remove(sessionId))
+            if (_forcedApplied.Remove(sessionId))
+            {
+                logger.Info($"[Season Rotator] Forced weather event '{_state.ForcedEvent}' finished, the planned events are untouched");
+                _state.ForcedEvent = null;
+            }
+            else if (_eventApplied.Remove(sessionId))
             {
                 FinishEvent();
             }
@@ -495,30 +569,41 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         lock (_lock)
         {
             var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
-            if (!config.UseCustomWeather || _state.EventRaids.Count == 0)
-            {
-                return null;
-            }
 
-            // only a raid that counts toward the season and has outdoor weather uses up an event
-            if (!_raidInfo.TryGetValue(sessionId, out var raid) || NoWeatherLocations.Contains(raid.Location) || (raid.IsScav && !config.ScavRaidsAdvanceSeason))
-            {
-                return null;
-            }
-
-            if (!EventDueNextRaid(config))
+            // no outdoor weather on this map: no event of any kind
+            if (!_raidInfo.TryGetValue(sessionId, out var raid) || NoWeatherLocations.Contains(raid.Location))
             {
                 return null;
             }
 
             var events = LoadEvents();
             var season = ((Season)_state.CurrentSeason).ToString();
-            if (!EnsureActiveEvent(events))
+            string eventName;
+            bool forced;
+            if (_state.ForcedEvent is { } forcedName && events.ContainsKey(forcedName))
             {
-                return null;
+                // forced from the client: any season, any raid with outdoor weather, no announcement, planned events untouched
+                eventName = forcedName;
+                forced = true;
+            }
+            else
+            {
+                // a planned event needs a raid that counts toward the season
+                if (!config.UseCustomWeather || _state.EventRaids.Count == 0 || (raid.IsScav && !config.ScavRaidsAdvanceSeason))
+                {
+                    return null;
+                }
+
+                if (!EventDueNextRaid(config) || !EnsureActiveEvent(events))
+                {
+                    return null;
+                }
+
+                eventName = _state.ActiveEvent!;
+                forced = false;
             }
 
-            var def = events[_state.ActiveEvent!];
+            var def = events[eventName];
             double? temp = def.Temp is { } range ? range.Min + Random.Shared.NextDouble() * (range.Max - range.Min) : null;
             // copies: the forecast list is the server's cache, which must keep the normal weather for later raids
             var result = forecast.Select(w => w with
@@ -533,10 +618,12 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
                 Temperature = temp ?? w.Temperature,
             }).ToList();
 
-            if (_eventApplied.Add(sessionId))
+            if (forced ? _forcedApplied.Add(sessionId) : _eventApplied.Add(sessionId))
             {
                 var first = result[0];
-                logger.Info($"[Season Rotator] Weather event '{_state.ActiveEvent}' for this raid ({season}, {_state.EventRaids.Count} due this season)");
+                logger.Info(forced
+                    ? $"[Season Rotator] Forced weather event '{eventName}' for this raid ({season}, the planned events are untouched)"
+                    : $"[Season Rotator] Weather event '{eventName}' for this raid ({season}, {_state.EventRaids.Count} due this season)");
                 logger.Info($"[Season Rotator] Event weather sent: {result.Count} nodes, first node fog {first.Fog}, rain {first.Rain}, rain intensity {first.RainIntensity}, cloud {first.Cloud}, wind {first.WindSpeed}, gustiness {first.WindGustiness}, time {first.Time}");
             }
 
@@ -683,6 +770,75 @@ public class ModState
     public string? ActiveEvent { get; set; }
     // Jaeger's warning for the next event raid was already sent
     public bool EventAnnounced { get; set; }
+    // Event forced from the client for the next outdoor raid (extra: it does not use up a planned event); cleared when that raid ends
+    public string? ForcedEvent { get; set; }
+}
+
+// What the client plugin shows in F12
+public class ControlInfo
+{
+    public string Season { get; set; } = string.Empty;
+    public int SeasonLength { get; set; }
+    public int RaidsInSeason { get; set; }
+    public List<string> Seasons { get; set; } = [];
+    public List<string> Events { get; set; } = [];
+    public string? ForcedEvent { get; set; }
+    public List<int> PlannedEventRaids { get; set; } = [];
+    public string? PlannedEvent { get; set; }
+}
+
+public class ControlResult
+{
+    public bool Ok { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public string? Error { get; set; }
+
+    public static ControlResult Success(string message) => new() { Ok = true, Message = message };
+    public static ControlResult Fail(string error) => new() { Ok = false, Error = error };
+}
+
+public class ControlRequest : SPTarkov.Server.Core.Models.Utils.IRequestData
+{
+    // "season" (Value = season name), "skip", "event" (Value = event name)
+    [System.Text.Json.Serialization.JsonPropertyName("action")]
+    public string? Action { get; set; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("value")]
+    public string? Value { get; set; }
+}
+
+// Routes for the client plugin (F12 buttons): GET /seasonrotator/info, POST /seasonrotator/do
+[Injectable]
+public class ControlRouter(JsonUtil jsonUtil, ChangeSeason changeSeason) : StaticRouter(jsonUtil,
+[
+    new RouteAction(
+        "/seasonrotator/info",
+        async (url, info, sessionId, output, _) => await Task.FromResult(ControlJson(changeSeason.GetControlInfo()))),
+    new RouteAction<ControlRequest>(
+        "/seasonrotator/do",
+        async (url, info, sessionId, output, _) =>
+        {
+            var result = info.Action?.ToLowerInvariant() switch
+            {
+                "season" => changeSeason.SetSeason(info.Value),
+                "event" => changeSeason.ForceEvent(info.Value),
+                "skip" => SkipAndReport(changeSeason),
+                _ => ControlResult.Fail($"Unknown action '{info.Action}'"),
+            };
+            return await Task.FromResult(ControlJson(result));
+        })
+])
+{
+    // camelCase so the client reads ok, message, error, season, events...
+    private static readonly JsonSerializerOptions Options = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    private static string ControlJson(object value) => JsonSerializer.Serialize(value, Options);
+
+    private static ControlResult SkipAndReport(ChangeSeason rotator)
+    {
+        rotator.SkipSeason();
+        return ControlResult.Success($"Season is now {rotator.GetControlInfo().Season}");
+    }
 }
 
 public static class ModExtensions

@@ -26,6 +26,12 @@ A small BepInEx plugin (`SeasonRotator.Client`, net471, goes in `BepInEx\plugins
 - `1. Weather / 1. Draw server fog in normal weather` (default on): affects all fog, natural fog too.
 - `2. Logging / 1. Log raid weather` (default on): writes to the BepInEx log the first weather node the game receives at raid start and, six times 5 seconds apart, the fog, rain and clouds it is drawing. The server log has a matching `Event weather sent` line.
 
+**F12 controls** (section `3. Control`, needs the server mod running): a status line, a season picker with a **Set season** button, a **Skip to the next season** button and an event picker with a **Force event** button. Pick with the `<` `>` arrows, then press the button next to the choice; a message confirms it.
+
+- **Set season** starts that season now with its raid counter at 0, like a skip (a season switched off with length 0 ends after its first raid).
+- **Force event** puts the event on your next outdoor raid (not Factory, Labs, Labyrinth). It is an extra: the planned events of the season are not used up and still happen, it ignores the `seasons` list of the event, and Jaeger sends no message. The event list is `Events` in `customWeather.json`, read by the server. The forced event is saved in `state.json` (`ForcedEvent`) and cleared when the raid it was used on ends.
+- Server routes used: `GET /seasonrotator/info` and `POST /seasonrotator/do` (`{"action": "season" | "skip" | "event", "value": ...}`).
+
 Build: `dotnet build Client\SeasonRotator.Client.csproj -c Release`; `SptDir` goes in `Client\SeasonRotator.Client.csproj.user`. Only the fog line is fixed so far; the other event values (rain, wind, temperature) still need checking in game.
 
 ## Web page
