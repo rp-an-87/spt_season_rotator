@@ -30,7 +30,7 @@
             "windSpeed": 4,
             "windGustiness": 1,
             "cloud": 1,
-            "fog": 0.01,
+            "fog": 0.075,
             "temp": { "min": -20, "max": -12 }
         },
         "Gale": {

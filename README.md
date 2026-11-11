@@ -15,7 +15,7 @@ Season Rotator
 
 ## Weather events (`Events` in `customWeather.json`)
 
-A weather event replaces the weather of one raid (the whole forecast the raid receives). Each event lists the `seasons` it can happen in and a `weight` (chance to be picked among the events that fit the season), plus any of `fog`, `rain`, `rainIntensity`, `windSpeed`, `windGustiness`, `cloud`, `pressure` and `temp` (`min`/`max`). A value left out keeps the normal weather's value. Shipped: Dense fog, Storm, Blizzard (winter only), Gale, Gloom, Misty rain. An optional `announcement` text is what Jaeger says before the raid. The values stay inside what the game's own test weather uses (wind up to 4, fog up to 0.03, clouds up to 1.3).
+A weather event replaces the weather of one raid (the whole forecast the raid receives). Each event lists the `seasons` it can happen in and a `weight` (chance to be picked among the events that fit the season), plus any of `fog`, `rain`, `rainIntensity`, `windSpeed`, `windGustiness`, `cloud`, `pressure` and `temp` (`min`/`max`). A value left out keeps the normal weather's value. Shipped: Dense fog, Storm, Blizzard (winter only), Gale, Gloom, Misty rain. An optional `announcement` text is what Jaeger says before the raid. The values stay inside what the game's own test weather uses (wind up to 4, fog up to 0.075, clouds up to 1.3).
 
 An event is used up when the raid it was on finishes, so leaving before the raid starts does not waste it. Factory, Labs and Labyrinth raids (no outdoor weather) never get one, and scav raids don't either when `ScavRaidsAdvanceSeason` is `false`; the event waits for the next raid that can. The server log says when events are planned, applied and finished. It uses a Harmony patch on `WeatherController.GenerateLocal`.
 
