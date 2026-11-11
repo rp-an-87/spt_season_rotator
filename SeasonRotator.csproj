@@ -20,6 +20,14 @@
   </ItemGroup>
 
 
+  <ItemGroup>
+    <!-- The server's own copy (HarmonyX): the non-virtual raid weather method is patched at runtime. Not copied to the mod folder. -->
+    <Reference Include="0Harmony" Condition="'$(SPTPath)' != ''">
+      <HintPath>$(SPTPath)\0Harmony.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
   <Target Name="CopyToSPT" AfterTargets="AfterBuild" Condition="'$(SPTPath)' != ''">
     <PropertyGroup>
       <ModsDirectoryPath>$(SPTPath)\user\mods\$(MSBuildProjectName)</ModsDirectoryPath>

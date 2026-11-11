@@ -10,5 +10,8 @@
   },
   "UseCustomWeather": true,
   "FactoryRaidsPerAdvance": 1,
-  "ScavRaidsAdvanceSeason": true
+  "ScavRaidsAdvanceSeason": true,
+  "EventsPerSeason": 1,
+  "RandomEventCount": false,
+  "AnnounceEvents": true
 }

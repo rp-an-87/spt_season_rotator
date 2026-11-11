@@ -14,6 +14,13 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Season = SPTarkov.Server.Core.Models.Enums.Season;
+using EftWeather = SPTarkov.Server.Core.Models.Eft.Weather.Weather;
+using HarmonyLib;
+using SPTarkov.Server.Core.Controllers;
+using SPTarkov.Server.Core.Models.Common;
+using SPTarkov.Server.Core.Models.Enums;
+using SPTarkov.Server.Core.Services.Commerce;
+using SPTarkov.Server.Core.Models.Spt.Weather;
 
 namespace SeasonRotator;
 
@@ -37,7 +44,7 @@ public record ModMetadata : IModMetadata, IModBlazorMetadata
 }
 
 [Injectable(InjectionType.Singleton, TypePriority = OnLoadOrder.Preload + 1)]
-public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> logger, ModHelper modHelper) : IOnLoad
+public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> logger, ModHelper modHelper, MailSendService mailSendService) : IOnLoad
 {
     private readonly int[] seasonsArray = [0, 1, 4, 6, 2, 5, 3];
     private readonly object _lock = new();
@@ -45,10 +52,19 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     private ModState _state = new();
     private readonly Dictionary<string, (string Location, bool IsScav)> _raidInfo = new();
     private static readonly HashSet<string> FactoryLocations = new(StringComparer.OrdinalIgnoreCase) { "factory4_day", "factory4_night" };
+    // The patch on the weather request reaches the mod through this
+    internal static ChangeSeason? Instance;
+    // Maps with no outdoor weather: a weather event is never used on them
+    private static readonly HashSet<string> NoWeatherLocations = new(StringComparer.OrdinalIgnoreCase) { "factory4_day", "factory4_night", "laboratory", "labyrinth" };
+    // Sessions whose current raid is getting a weather event (it counts as used when that raid finishes)
+    private readonly HashSet<string> _eventApplied = new();
 
     public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        Instance = this;
+        InstallEventPatch();
 
         _modPath = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
         var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
@@ -142,6 +158,7 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         lock (_lock)
         {
             _raidInfo[sessionId] = (location ?? string.Empty, string.Equals(playerSide, "Savage", StringComparison.OrdinalIgnoreCase));
+            _eventApplied.Remove(sessionId);
         }
     }
 
@@ -153,6 +170,11 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
             var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
 
             _raidInfo.Remove(sessionId, out var raid);
+            if (_eventApplied.Remove(sessionId))
+            {
+                FinishEvent();
+            }
+
             _state.TotalRaids++;
 
             if (CountsTowardSeason(config, raid.Location, raid.IsScav))
@@ -168,6 +190,7 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
                 ApplySeason(config);
             }
 
+            AnnounceEventIfDue(config, sessionId);
             LogStatus(config);
         }
     }
@@ -267,6 +290,7 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     {
         var seasonEnum = (Season)_state.CurrentSeason;
         weatherConfig.OverrideSeason = seasonEnum;
+        EnsureEventSchedule(config);
 
         if (!config.UseCustomWeather)
         {
@@ -313,6 +337,221 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
                     }
                 }
             }
+        }
+    }
+
+    // ---- Weather events -----------------------------------------------------------------------------------------
+    // A weather event (storm, fog, blizzard, see "Events" in customWeather.json) replaces the weather of one raid. Each full
+    // season gets EventsPerSeason of them, on raids picked at random when the season starts. Seasons that come in two halves
+    // count as one: AUTUMN + AUTUMN_LATE and SPRING_EARLY + SPRING share one schedule. Season ids in rotation order:
+    // SUMMER 0, AUTUMN 1, AUTUMN_LATE 4, STORM 6, WINTER 2, SPRING_EARLY 5, SPRING 3 (STORM has no events).
+    private static readonly int[][] EventGroups = [[0], [1, 4], [2], [5, 3]];
+
+    private static int[]? GroupFor(int season) => EventGroups.FirstOrDefault(group => group.Contains(season));
+
+    private static string GroupKey(int[] group) => ((Season)group[0]).ToString();
+
+    // Counted raids of the group that came before the current season of it, plus the ones in the current season
+    private int RaidsDoneInGroup(ModConfig config, int[] group) =>
+        group.TakeWhile(season => season != _state.CurrentSeason).Sum(season => LengthOf(config, season)) + _state.RaidsInSeason;
+
+    // Caller holds _lock. When the season group changes (or there is no schedule yet), pick the raids that get an event.
+    private void EnsureEventSchedule(ModConfig config)
+    {
+        var group = GroupFor(_state.CurrentSeason);
+        var key = group is null ? null : GroupKey(group);
+        if (key == _state.EventGroup)
+        {
+            return;
+        }
+
+        _state.EventGroup = key;
+        _state.EventRaids = [];
+        _state.ActiveEvent = null;
+        _state.EventAnnounced = false;
+
+        if (group is not null && config.EventsPerSeason > 0)
+        {
+            var length = group.Sum(season => LengthOf(config, season));
+            var done = RaidsDoneInGroup(config, group);
+            var free = Enumerable.Range(done + 1, Math.Max(0, length - done)).ToList();
+            var count = config.RandomEventCount ? Random.Shared.Next(0, config.EventsPerSeason + 1) : config.EventsPerSeason;
+            count = Math.Min(count, free.Count);
+            _state.EventRaids = free.OrderBy(_ => Random.Shared.Next()).Take(count).Order().ToList();
+            logger.Info($"[Season Rotator] Weather events for {key}: {count} planned, on raid {(count == 0 ? "-" : string.Join(", ", _state.EventRaids))} of {length}");
+        }
+
+        ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+    }
+
+    // Caller holds _lock. The raid that had the event is over: it is used up.
+    private void FinishEvent()
+    {
+        if (_state.EventRaids.Count > 0)
+        {
+            _state.EventRaids.RemoveAt(0);
+        }
+
+        _state.ActiveEvent = null;
+        _state.EventAnnounced = false;
+        logger.Info($"[Season Rotator] Weather event finished, {_state.EventRaids.Count} left this season");
+    }
+
+    // Caller holds _lock. True when the next counted raid of the season group is one that has an event planned.
+    private bool EventDueNextRaid(ModConfig config)
+    {
+        if (!config.UseCustomWeather || _state.EventRaids.Count == 0)
+        {
+            return false;
+        }
+
+        var group = GroupFor(_state.CurrentSeason);
+        return group is not null && GroupKey(group) == _state.EventGroup && RaidsDoneInGroup(config, group) + 1 >= _state.EventRaids[0];
+    }
+
+    // Caller holds _lock. Picks (weighted, for the current season) the event of the due raid unless one is already picked and saved.
+    private bool EnsureActiveEvent(Dictionary<string, WeatherEventDef> events)
+    {
+        if (_state.ActiveEvent is not null && events.ContainsKey(_state.ActiveEvent))
+        {
+            return true;
+        }
+
+        var season = ((Season)_state.CurrentSeason).ToString();
+        var allowed = events.Where(e => e.Value.Seasons.Any(s => string.Equals(s, season, StringComparison.OrdinalIgnoreCase)) && e.Value.Weight > 0).ToList();
+        if (allowed.Count == 0)
+        {
+            logger.Warning($"[Season Rotator] A weather event is due but none in customWeather.json \"Events\" allows {season}");
+            return false;
+        }
+
+        var roll = Random.Shared.NextDouble() * allowed.Sum(e => e.Value.Weight);
+        var pick = allowed[^1];
+        foreach (var candidate in allowed)
+        {
+            roll -= candidate.Value.Weight;
+            if (roll < 0)
+            {
+                pick = candidate;
+                break;
+            }
+        }
+
+        _state.ActiveEvent = pick.Key;
+        _state.EventAnnounced = false;
+        ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+        return true;
+    }
+
+    // Caller holds _lock. After a raid: when the next raid has an event, Jaeger sends the weather warning (once per event).
+    private void AnnounceEventIfDue(ModConfig config, string sessionId)
+    {
+        try
+        {
+            if (!config.AnnounceEvents || _state.EventAnnounced || !EventDueNextRaid(config))
+            {
+                return;
+            }
+
+            var events = LoadEvents();
+            if (!EnsureActiveEvent(events))
+            {
+                return;
+            }
+
+            var name = _state.ActiveEvent!;
+            var text = string.IsNullOrWhiteSpace(events[name].Announcement)
+                ? $"Mercenary. Word from the woods: {name.ToLowerInvariant()} is on its way. Be ready for it."
+                : events[name].Announcement!;
+            text += "\n\nIt will hit your next raid outside. The factory and the labs never see the weather.";
+
+            mailSendService.SendDirectNpcMessageToPlayer(new MongoId(sessionId), Traders.JAEGER, MessageType.NpcTraderMessage, text, null);
+            _state.EventAnnounced = true;
+            ModExtensions.SaveJsonDataToFile(modHelper, _modPath, "state.json", _state);
+            logger.Info($"[Season Rotator] Jaeger announced the weather event '{name}' for the next raid");
+        }
+        catch (Exception e)
+        {
+            logger.Error($"[Season Rotator] Could not send the weather event message: {e}");
+        }
+    }
+
+    private Dictionary<string, WeatherEventDef> LoadEvents()
+    {
+        var root = modHelper.GetJsonDataFromFile<JsonNode>(_modPath, "customWeather.json");
+        return root?["Events"]?.Deserialize<Dictionary<string, WeatherEventDef>>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+               ?? new Dictionary<string, WeatherEventDef>();
+    }
+
+    // The raid is about to start and asks for its weather (called by the patch on WeatherController.GenerateLocal).
+    // Returns the forecast with the event applied, or null when this raid gets no event.
+    internal List<EftWeather>? ApplyEvent(string sessionId, List<EftWeather>? forecast)
+    {
+        if (forecast is null || forecast.Count == 0)
+        {
+            return null;
+        }
+
+        lock (_lock)
+        {
+            var config = modHelper.GetJsonDataFromFile<ModConfig>(_modPath, "config.json");
+            if (!config.UseCustomWeather || _state.EventRaids.Count == 0)
+            {
+                return null;
+            }
+
+            // only a raid that counts toward the season and has outdoor weather uses up an event
+            if (!_raidInfo.TryGetValue(sessionId, out var raid) || NoWeatherLocations.Contains(raid.Location) || (raid.IsScav && !config.ScavRaidsAdvanceSeason))
+            {
+                return null;
+            }
+
+            if (!EventDueNextRaid(config))
+            {
+                return null;
+            }
+
+            var events = LoadEvents();
+            var season = ((Season)_state.CurrentSeason).ToString();
+            if (!EnsureActiveEvent(events))
+            {
+                return null;
+            }
+
+            var def = events[_state.ActiveEvent!];
+            double? temp = def.Temp is { } range ? range.Min + Random.Shared.NextDouble() * (range.Max - range.Min) : null;
+            if (_eventApplied.Add(sessionId))
+            {
+                logger.Info($"[Season Rotator] Weather event '{_state.ActiveEvent}' for this raid ({season}, {_state.EventRaids.Count} due this season)");
+            }
+
+            // copies: the forecast list is the server's cache, which must keep the normal weather for later raids
+            return forecast.Select(w => w with
+            {
+                Fog = def.Fog ?? w.Fog,
+                Rain = def.Rain ?? w.Rain,
+                RainIntensity = def.RainIntensity ?? w.RainIntensity,
+                WindSpeed = def.WindSpeed ?? w.WindSpeed,
+                WindGustiness = def.WindGustiness ?? w.WindGustiness,
+                Cloud = def.Cloud ?? w.Cloud,
+                Pressure = def.Pressure ?? w.Pressure,
+                Temperature = temp ?? w.Temperature,
+            }).ToList();
+        }
+    }
+
+    private void InstallEventPatch()
+    {
+        try
+        {
+            // the method isn't virtual, hence Harmony (the server's own HarmonyX)
+            new Harmony("com.turbodestroyer.seasonrotator.events").Patch(
+                AccessTools.Method(typeof(WeatherController), nameof(WeatherController.GenerateLocal)),
+                postfix: new HarmonyMethod(typeof(WeatherEventPatches), nameof(WeatherEventPatches.GenerateLocalPostfix)));
+        }
+        catch (Exception e)
+        {
+            logger.Error($"[Season Rotator] Could not patch the raid weather, weather events are off: {e}");
         }
     }
 
@@ -402,6 +641,16 @@ public class ModConfig
 
     // true (default) = scav raids count toward the season like any other raid; false = only PMC raids do.
     public bool ScavRaidsAdvanceSeason { get; set; } = true;
+
+    // Weather events ("Events" in customWeather.json) per full season (autumn and spring count as one, not per half):
+    // 0 = none, 1 = once, 2 = twice... on raids picked at random. Needs UseCustomWeather. A change applies from the next season.
+    public int EventsPerSeason { get; set; } = 1;
+
+    // true = the number of events each season is random, from 0 up to EventsPerSeason
+    public bool RandomEventCount { get; set; }
+
+    // true (default) = Jaeger messages you after the raid before a weather event raid, saying what is coming
+    public bool AnnounceEvents { get; set; } = true;
 }
 
 public class SeasonStatus
@@ -423,6 +672,13 @@ public class ModState
     public int TotalRaids { get; set; }
     // Factory raids played since the last one that counted toward the season
     public int FactoryRaidsSinceAdvance { get; set; }
+    // Season group the event plan below is for, the group raid numbers (1 = first counted raid of the group) still due an
+    // event, and the event picked for the next one
+    public string? EventGroup { get; set; }
+    public List<int> EventRaids { get; set; } = [];
+    public string? ActiveEvent { get; set; }
+    // Jaeger's warning for the next event raid was already sent
+    public bool EventAnnounced { get; set; }
 }
 
 public static class ModExtensions
@@ -432,5 +688,50 @@ public static class ModExtensions
         var fullPath = Path.Combine(pathToFile, fileName);
         var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(fullPath, json);
+    }
+}
+
+// One entry of "Events" in customWeather.json. A missing value keeps the normal weather's value.
+public class WeatherEventDef
+{
+    // season names this event can happen in (WINTER, SUMMER, AUTUMN, AUTUMN_LATE, SPRING, SPRING_EARLY)
+    public List<string> Seasons { get; set; } = [];
+    // how likely it is picked among the events that fit the season
+    public double Weight { get; set; } = 1;
+    // Jaeger's message before the raid (optional, there is a generic one)
+    public string? Announcement { get; set; }
+    public double? Fog { get; set; }
+    public double? Rain { get; set; }
+    public double? RainIntensity { get; set; }
+    public double? WindSpeed { get; set; }
+    public double? WindGustiness { get; set; }
+    public double? Cloud { get; set; }
+    public double? Pressure { get; set; }
+    public EventRange? Temp { get; set; }
+}
+
+public class EventRange
+{
+    public double Min { get; set; }
+    public double Max { get; set; }
+}
+
+public static class WeatherEventPatches
+{
+    // The weather the client gets when a raid starts: swap in the event when this raid has one
+    public static void GenerateLocalPostfix(MongoId sessionId, GetLocalWeatherResponseData __result)
+    {
+        try
+        {
+            var withEvent = ChangeSeason.Instance?.ApplyEvent(sessionId.ToString(), __result.Weather);
+            if (withEvent is not null)
+            {
+                __result.Weather = withEvent;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"[Season Rotator] Weather event failed: {e}");
+        }
     }
 }

@@ -1,4 +1,69 @@
 {
+    "Events": {
+        "Dense fog": {
+            "announcement": "Mercenary. The woods are breathing heavy, and the fog is coming in thick, the kind that swallows a man's shadow. You won't see past arm's length, and neither will anyone hunting you. Walk slow, listen close, and don't trust your eyes.",
+            "seasons": ["SUMMER", "AUTUMN", "AUTUMN_LATE", "WINTER", "SPRING", "SPRING_EARLY"],
+            "weight": 1,
+            "fog": 0.03,
+            "windSpeed": 0,
+            "windGustiness": 0,
+            "cloud": 0.4,
+            "rain": 1,
+            "rainIntensity": 0
+        },
+        "Storm": {
+            "announcement": "Listen. The birds have gone quiet and my knees ache. A proper storm is rolling in: rain in sheets, wind that bends the pines. Nothing stays dry out there. Gear up for it, or stay home. Your call.",
+            "seasons": ["SUMMER", "AUTUMN", "AUTUMN_LATE", "SPRING", "SPRING_EARLY"],
+            "weight": 1,
+            "rain": 5,
+            "rainIntensity": 1,
+            "windSpeed": 4,
+            "windGustiness": 1,
+            "cloud": 1.3
+        },
+        "Blizzard": {
+            "announcement": "A blizzard is coming down from the north, mercenary. Snow so thick you won't tell a tree from a man, and a cold that bites through anything cheap. Dress warm, keep moving, and don't get lost out there.",
+            "seasons": ["WINTER"],
+            "weight": 2,
+            "rain": 5,
+            "rainIntensity": 1,
+            "windSpeed": 4,
+            "windGustiness": 1,
+            "cloud": 1,
+            "fog": 0.01,
+            "temp": { "min": -20, "max": -12 }
+        },
+        "Gale": {
+            "announcement": "The wind has turned wild. No rain, but it will howl through the trees all day and swallow every sound, yours and theirs. Hard to hear a footstep in that. Trust your eyes this time.",
+            "seasons": ["SUMMER", "AUTUMN", "AUTUMN_LATE", "WINTER", "SPRING", "SPRING_EARLY"],
+            "weight": 1,
+            "windSpeed": 4,
+            "windGustiness": 1,
+            "cloud": 0.4,
+            "rain": 1,
+            "rainIntensity": 0
+        },
+        "Gloom": {
+            "announcement": "The sky is closing up, heavy and dark, and it won't lift all day. Little light gets through those clouds. Shadows will be deeper than you expect, so bring what you need to see.",
+            "seasons": ["AUTUMN", "AUTUMN_LATE", "SPRING_EARLY"],
+            "weight": 1,
+            "cloud": 1.3,
+            "fog": 0.01,
+            "rain": 1,
+            "rainIntensity": 0,
+            "windSpeed": 1
+        },
+        "Misty rain": {
+            "announcement": "Mist and a steady rain are settling over the woods, the kind that soaks you slowly and hides whatever is ahead. Nothing dramatic, but a patient man will use it. Mind your footing.",
+            "seasons": ["AUTUMN", "AUTUMN_LATE", "SPRING", "SPRING_EARLY"],
+            "weight": 1,
+            "rain": 3,
+            "rainIntensity": 0.5,
+            "fog": 0.02,
+            "windSpeed": 1,
+            "cloud": 1
+        }
+    },
     "Presets": {
         "WINTER": {
             "SUNNY": {
