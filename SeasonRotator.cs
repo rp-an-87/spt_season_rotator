@@ -520,13 +520,8 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
 
             var def = events[_state.ActiveEvent!];
             double? temp = def.Temp is { } range ? range.Min + Random.Shared.NextDouble() * (range.Max - range.Min) : null;
-            if (_eventApplied.Add(sessionId))
-            {
-                logger.Info($"[Season Rotator] Weather event '{_state.ActiveEvent}' for this raid ({season}, {_state.EventRaids.Count} due this season)");
-            }
-
             // copies: the forecast list is the server's cache, which must keep the normal weather for later raids
-            return forecast.Select(w => w with
+            var result = forecast.Select(w => w with
             {
                 Fog = def.Fog ?? w.Fog,
                 Rain = def.Rain ?? w.Rain,
@@ -537,6 +532,15 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
                 Pressure = def.Pressure ?? w.Pressure,
                 Temperature = temp ?? w.Temperature,
             }).ToList();
+
+            if (_eventApplied.Add(sessionId))
+            {
+                var first = result[0];
+                logger.Info($"[Season Rotator] Weather event '{_state.ActiveEvent}' for this raid ({season}, {_state.EventRaids.Count} due this season)");
+                logger.Info($"[Season Rotator] Event weather sent: {result.Count} nodes, first node fog {first.Fog}, rain {first.Rain}, rain intensity {first.RainIntensity}, cloud {first.Cloud}, wind {first.WindSpeed}, gustiness {first.WindGustiness}, time {first.Time}");
+            }
+
+            return result;
         }
     }
 
