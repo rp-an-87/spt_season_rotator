@@ -10,7 +10,8 @@ Season Rotator
 | `FactoryRaidsPerAdvance` | Factory (day and night share one counter) raids only count toward the season once every N factory raids. `1` (default) = off, every raid counts. Other maps are unaffected and lifetime raids still count every raid. |
 | `ScavRaidsAdvanceSeason` | `true` (default): scav raids count toward the season like any other raid. `false`: only PMC raids count (scav raids still count in lifetime raids). |
 | `EventsPerSeason` | Weather events per full season: `0` = none, `1` = once (default), `2` = twice... Autumn (`AUTUMN` + `AUTUMN_LATE`) and spring (`SPRING_EARLY` + `SPRING`) count as one season, so they share the events instead of getting them per half. The raids are picked at random when the season starts and saved in `state.json`. Needs `UseCustomWeather`. A change applies from the next season. |
-| `RandomEventCount` | `true`: the number of events each season is random, from 0 up to `EventsPerSeason`. Default `false`. |
+| `EventsPerSeasonBySeason` | Events per season, overriding `EventsPerSeason`: `{"SUMMER": 2, "AUTUMN": 2, "WINTER": 3, "SPRING": 2}`. Keys are `SUMMER`, `AUTUMN` (covers `AUTUMN_LATE` too), `WINTER` and `SPRING` (covers `SPRING_EARLY` too). A season left out uses `EventsPerSeason`. |
+| `RandomEventCount` | `true`: the number of events each season is random, from 0 up to that season's number. Default `false`. |
 | `AnnounceEvents` | `true` (default): after the raid before an event raid, Jaeger messages you what weather is coming (`announcement` text per event in `customWeather.json`, with a generic fallback). Sent once per event; the event type is picked at that moment so the message always matches. |
 
 ## Weather events (`Events` in `customWeather.json`)

@@ -429,6 +429,12 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
     private int RaidsDoneInGroup(ModConfig config, int[] group) =>
         group.TakeWhile(season => season != _state.CurrentSeason).Sum(season => LengthOf(config, season)) + _state.RaidsInSeason;
 
+    // Events for a season group: its own entry in EventsPerSeasonBySeason, else the EventsPerSeason default
+    private static int EventsFor(ModConfig config, string? key) =>
+        key is not null && config.EventsPerSeasonBySeason.FirstOrDefault(e => string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase)) is { Key: not null } entry
+            ? Math.Max(0, entry.Value)
+            : Math.Max(0, config.EventsPerSeason);
+
     // Caller holds _lock. When the season group changes (or there is no schedule yet), pick the raids that get an event.
     private void EnsureEventSchedule(ModConfig config)
     {
@@ -444,12 +450,13 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
         _state.ActiveEvent = null;
         _state.EventAnnounced = false;
 
-        if (group is not null && config.EventsPerSeason > 0)
+        var perSeason = EventsFor(config, key);
+        if (group is not null && perSeason > 0)
         {
             var length = group.Sum(season => LengthOf(config, season));
             var done = RaidsDoneInGroup(config, group);
             var free = Enumerable.Range(done + 1, Math.Max(0, length - done)).ToList();
-            var count = config.RandomEventCount ? Random.Shared.Next(0, config.EventsPerSeason + 1) : config.EventsPerSeason;
+            var count = config.RandomEventCount ? Random.Shared.Next(0, perSeason + 1) : perSeason;
             count = Math.Min(count, free.Count);
             _state.EventRaids = free.OrderBy(_ => Random.Shared.Next()).Take(count).Order().ToList();
             logger.Info($"[Season Rotator] Weather events for {key}: {count} planned, on raid {(count == 0 ? "-" : string.Join(", ", _state.EventRaids))} of {length}");
@@ -736,6 +743,10 @@ public class ModConfig
     // Weather events ("Events" in customWeather.json) per full season (autumn and spring count as one, not per half):
     // 0 = none, 1 = once, 2 = twice... on raids picked at random. Needs UseCustomWeather. A change applies from the next season.
     public int EventsPerSeason { get; set; } = 1;
+
+    // Events per season group, overriding EventsPerSeason: SUMMER, AUTUMN (with AUTUMN_LATE), WINTER, SPRING (with SPRING_EARLY).
+    // A season left out uses EventsPerSeason.
+    public Dictionary<string, int> EventsPerSeasonBySeason { get; set; } = new();
 
     // true = the number of events each season is random, from 0 up to EventsPerSeason
     public bool RandomEventCount { get; set; }
