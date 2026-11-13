@@ -16,9 +16,15 @@
             "seasons": ["SUMMER", "AUTUMN", "AUTUMN_LATE", "SPRING", "SPRING_EARLY"],
             "weight": 1,
             "rain": 5,
+            "rainLow": 2.5,
             "rainIntensity": 1,
+            "rainIntensityLow": 0.35,
             "windSpeed": 4,
+            "windSpeedLow": 2,
             "windGustiness": 1,
+            "windGustinessLow": 0.4,
+            "surges": 6,
+            "fog": 0.012,
             "cloud": 1.3
         },
         "Blizzard": {

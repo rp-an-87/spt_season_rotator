@@ -613,13 +613,14 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
             var def = events[eventName];
             double? temp = def.Temp is { } range ? range.Min + Random.Shared.NextDouble() * (range.Max - range.Min) : null;
             // copies: the forecast list is the server's cache, which must keep the normal weather for later raids
-            var result = forecast.Select(w => w with
+            var surges = def.Surges > 0 ? Surge(forecast.Count, def.Surges) : null;
+            var result = forecast.Select((w, i) => w with
             {
                 Fog = def.Fog ?? w.Fog,
-                Rain = def.Rain ?? w.Rain,
-                RainIntensity = def.RainIntensity ?? w.RainIntensity,
-                WindSpeed = def.WindSpeed ?? w.WindSpeed,
-                WindGustiness = def.WindGustiness ?? w.WindGustiness,
+                Rain = Surged(def.Rain, def.RainLow, surges, i) ?? w.Rain,
+                RainIntensity = Surged(def.RainIntensity, def.RainIntensityLow, surges, i) ?? w.RainIntensity,
+                WindSpeed = Surged(def.WindSpeed, def.WindSpeedLow, surges, i) ?? w.WindSpeed,
+                WindGustiness = Surged(def.WindGustiness, def.WindGustinessLow, surges, i) ?? w.WindGustiness,
                 Cloud = def.Cloud ?? w.Cloud,
                 Pressure = def.Pressure ?? w.Pressure,
                 Temperature = temp ?? w.Temperature,
@@ -637,6 +638,22 @@ public class ChangeSeason(WeatherConfig weatherConfig, ISptLogger<ChangeSeason> 
             return result;
         }
     }
+
+    // Per node 0..1 curve for an event with "Surges": about that many peaks over the forecast, at random places and a bit uneven
+    private static double[] Surge(int nodes, int surges)
+    {
+        var phase = Random.Shared.NextDouble() * Math.PI * 2;
+        var phase2 = Random.Shared.NextDouble() * Math.PI * 2;
+        return Enumerable.Range(0, nodes).Select(i =>
+        {
+            var a = Math.PI * 2 * surges * i / Math.Max(1, nodes - 1);
+            return Math.Clamp(0.5 + 0.38 * Math.Sin(a + phase) + 0.12 * Math.Sin(2.3 * a + phase2), 0, 1);
+        }).ToArray();
+    }
+
+    // The event's value for a node: the peak value, or between low and peak while surging (no low = flat)
+    private static double? Surged(double? peak, double? low, double[]? surge, int node) =>
+        peak is null || low is null || surge is null ? peak : low + (peak - low) * surge[node];
 
     private void InstallEventPatch()
     {
@@ -878,6 +895,13 @@ public class WeatherEventDef
     public double? WindGustiness { get; set; }
     public double? Cloud { get; set; }
     public double? Pressure { get; set; }
+    // Optional surges: the number of peaks over the raid's forecast (0 = flat). With it, rain, rain intensity, wind speed and
+    // gustiness swing between their "...Low" value and the main value (the peak); a value without a "...Low" stays flat.
+    public int Surges { get; set; }
+    public double? RainLow { get; set; }
+    public double? RainIntensityLow { get; set; }
+    public double? WindSpeedLow { get; set; }
+    public double? WindGustinessLow { get; set; }
     public EventRange? Temp { get; set; }
 }
 
