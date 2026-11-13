@@ -12,6 +12,12 @@
   "FactoryRaidsPerAdvance": 1,
   "ScavRaidsAdvanceSeason": true,
   "EventsPerSeason": 1,
+  "EventsPerSeasonBySeason": {
+    "SUMMER": 2,
+    "AUTUMN": 2,
+    "WINTER": 3,
+    "SPRING": 2
+  },
   "RandomEventCount": false,
   "AnnounceEvents": true
 }
